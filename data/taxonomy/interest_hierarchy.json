@@ -1,0 +1,166 @@
+{
+  "version": "1.0.0",
+  "updated": "2026-01-17",
+  "hierarchy": {
+    "sports": {
+      "name": "Спорт",
+      "level": 0,
+      "children": {
+        "football": {
+          "name": "Футбол",
+          "level": 1,
+          "children": {
+            "zenit": {"name": "ФК Зенит", "level": 2},
+            "cska": {"name": "ФК ЦСКА", "level": 2},
+            "world_cup": {"name": "Чемпионат мира", "level": 2},
+            "fifa": {"name": "FIFA", "level": 2}
+          }
+        },
+        "basketball": {
+          "name": "Баскетбол",
+          "level": 1,
+          "children": {
+            "nba": {"name": "NBA", "level": 2},
+            "euroleague": {"name": "Евролига", "level": 2}
+          }
+        },
+        "hockey": {
+          "name": "Хоккей",
+          "level": 1,
+          "children": {
+            "khl": {"name": "КХЛ", "level": 2},
+            "nhl": {"name": "NHL", "level": 2}
+          }
+        }
+      }
+    },
+    "technology": {
+      "name": "Технологии",
+      "level": 0,
+      "children": {
+        "programming": {
+          "name": "Программирование",
+          "level": 1,
+          "children": {
+            "python": {"name": "Python", "level": 2},
+            "javascript": {"name": "JavaScript", "level": 2},
+            "machine_learning": {"name": "Machine Learning", "level": 2},
+            "web_development": {"name": "Web Development", "level": 2}
+          }
+        },
+        "gadgets": {
+          "name": "Гаджеты",
+          "level": 1,
+          "children": {
+            "smartphones": {"name": "Смартфоны", "level": 2},
+            "laptops": {"name": "Ноутбуки", "level": 2},
+            "wearables": {"name": "Носимые устройства", "level": 2}
+          }
+        }
+      }
+    },
+    "music": {
+      "name": "Музыка",
+      "level": 0,
+      "children": {
+        "rock": {
+          "name": "Рок",
+          "level": 1,
+          "children": {
+            "classic_rock": {"name": "Классический рок", "level": 2},
+            "alternative": {"name": "Альтернатива", "level": 2},
+            "metal": {"name": "Метал", "level": 2}
+          }
+        },
+        "pop": {
+          "name": "Поп",
+          "level": 1,
+          "children": {
+            "russian_pop": {"name": "Русская поп-музыка", "level": 2},
+            "international_pop": {"name": "Международная поп-музыка", "level": 2}
+          }
+        },
+        "electronic": {
+          "name": "Электронная",
+          "level": 1,
+          "children": {
+            "house": {"name": "House", "level": 2},
+            "techno": {"name": "Techno", "level": 2},
+            "dubstep": {"name": "Dubstep", "level": 2}
+          }
+        }
+      }
+    },
+    "entertainment": {
+      "name": "Развлечения",
+      "level": 0,
+      "children": {
+        "movies": {
+          "name": "Фильмы",
+          "level": 1,
+          "children": {
+            "action": {"name": "Боевики", "level": 2},
+            "comedy": {"name": "Комедии", "level": 2},
+            "drama": {"name": "Драмы", "level": 2},
+            "sci_fi": {"name": "Фантастика", "level": 2}
+          }
+        },
+        "games": {
+          "name": "Игры",
+          "level": 1,
+          "children": {
+            "pc_games": {"name": "PC игры", "level": 2},
+            "console_games": {"name": "Консольные игры", "level": 2},
+            "mobile_games": {"name": "Мобильные игры", "level": 2}
+          }
+        }
+      }
+    },
+    "travel": {
+      "name": "Путешествия",
+      "level": 0,
+      "children": {
+        "domestic": {
+          "name": "Внутренний туризм",
+          "level": 1,
+          "children": {
+            "moscow": {"name": "Москва", "level": 2},
+            "st_petersburg": {"name": "Санкт-Петербург", "level": 2},
+            "sochi": {"name": "Сочи", "level": 2}
+          }
+        },
+        "international": {
+          "name": "Международный туризм",
+          "level": 1,
+          "children": {
+            "europe": {"name": "Европа", "level": 2},
+            "asia": {"name": "Азия", "level": 2},
+            "americas": {"name": "Америка", "level": 2}
+          }
+        }
+      }
+    },
+    "food": {
+      "name": "Еда",
+      "level": 0,
+      "children": {
+        "cooking": {
+          "name": "Кулинария",
+          "level": 1,
+          "children": {
+            "recipes": {"name": "Рецепты", "level": 2},
+            "healthy_food": {"name": "Здоровое питание", "level": 2}
+          }
+        },
+        "restaurants": {
+          "name": "Рестораны",
+          "level": 1,
+          "children": {
+            "fine_dining": {"name": "Высокая кухня", "level": 2},
+            "fast_food": {"name": "Фаст-фуд", "level": 2}
+          }
+        }
+      }
+    }
+  }
+}

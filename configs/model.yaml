@@ -1,0 +1,58 @@
+# Model Configuration
+model:
+  name: "InterestPredictor"
+  
+  encoder:
+    transformer:
+      d_model: 256
+      n_heads: 8
+      n_layers: 6
+      d_ff: 1024
+      dropout: 0.1
+      max_seq_len: 100
+    
+    graph:
+      hidden_dim: 128
+      n_layers: 3
+      n_heads: 4
+      dropout: 0.1
+  
+  fusion:
+    method: "cross_attention"
+    output_dim: 512
+  
+  heads:
+    interest:
+      type: "multi_label"
+      n_classes: 500
+      threshold: 0.5
+    
+    confidence:
+      type: "regression"
+      output_dim: 1
+    
+    next_action:
+      type: "classification"
+      n_classes: 50
+    
+    segment:
+      type: "clustering"
+      n_clusters: 20
+
+training:
+  batch_size: 64
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  epochs: 100
+  early_stopping_patience: 10
+  gradient_clip: 1.0
+
+optimizer:
+  name: "AdamW"
+  betas: [0.9, 0.999]
+  eps: 0.00000001
+
+scheduler:
+  name: "cosine_annealing"
+  T_max: 100
+  eta_min: 0.0000001

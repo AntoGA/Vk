@@ -1,0 +1,27 @@
+# Base Configuration
+app:
+  name: "VK Interest Predictor"
+  version: "0.1.0"
+  debug: true
+
+vk_api:
+  version: "5.199"
+  rate_limit: 3  # requests per second
+  timeout: 30
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "vkdb"
+  pool_size: 10
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  cache_ttl: 3600  # 1 hour
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/app.log"
