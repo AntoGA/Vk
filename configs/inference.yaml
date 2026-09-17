@@ -1,0 +1,24 @@
+# Inference Configuration
+inference:
+  batch_size: 1
+  device: "cpu"  # cpu or cuda
+  num_workers: 4
+  
+  optimization:
+    fp16: false
+    torch_compile: false
+    onnx: false
+  
+  caching:
+    enabled: true
+    ttl: 300  # 5 minutes
+    max_size: 10000
+  
+  performance:
+    target_latency_ms: 100
+    max_queue_size: 1000
+    timeout_ms: 5000
+
+model:
+  path: "models/interest_predictor.pt"
+  version: "latest"
