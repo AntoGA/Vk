@@ -1,0 +1,39 @@
+# Training Configuration
+training:
+  mode: "online"  # online or offline
+  
+  online:
+    batch_size: 32
+    update_frequency: 100  # update every N events
+    experience_buffer_size: 100000
+    learning_rate: 0.0001
+  
+  offline:
+    batch_size: 256
+    epochs: 100
+    validation_split: 0.2
+
+data:
+  train_path: "data/processed/train.parquet"
+  val_path: "data/processed/val.parquet"
+  test_path: "data/processed/test.parquet"
+  
+  augmentation:
+    enabled: true
+    methods:
+      - name: "random_masking"
+        probability: 0.1
+      - name: "sequence_shuffle"
+        probability: 0.05
+
+checkpoint:
+  save_dir: "checkpoints"
+  save_frequency: 10  # epochs
+  keep_last: 5
+  monitor: "val_f1_score"
+  mode: "max"
+
+early_stopping:
+  enabled: true
+  patience: 10
+  min_delta: 0.001
