@@ -1,3 +1,12 @@
+"""
+Online Learner - использует единый контракт (ModelInput, ModelOutput).
+
+ЭКСПЕРИМЕНТАЛЬНЫЙ КОМПОНЕНТ - не обязателен для V1.
+
+Отвечает за:
+- Continuous learning через experience replay
+- Обновление модели на новых данных
+"""
 import torch
 import torch.nn as nn
 from torch.optim import SGD, Adam
@@ -5,6 +14,8 @@ from typing import Dict, List, Optional, Tuple
 from collections import deque
 import logging
 from datetime import datetime
+
+from ..contracts import ModelInput, ModelOutput
 
 logger = logging.getLogger(__name__)
 
@@ -16,30 +27,31 @@ class ExperienceReplayBuffer:
         self.max_size = max_size
         self.buffer = deque(maxlen=max_size)
         
-    def add(self, features: Dict[str, torch.Tensor], labels: torch.Tensor):
+    def add(self, model_input: ModelInput, labels: torch.Tensor):
         """Add experience to buffer"""
-        self.buffer.append((features, labels))
+        self.buffer.append((model_input, labels))
         
-    def sample(self, batch_size: int) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+    def sample(self, batch_size: int) -> Tuple[List[ModelInput], torch.Tensor]:
         """Sample batch from buffer"""
         import random
         samples = random.sample(list(self.buffer), min(batch_size, len(self.buffer)))
         
-        # Stack features and labels
-        batch_features = {}
-        for key in samples[0][0].keys():
-            batch_features[key] = torch.stack([s[0][key] for s in samples])
-        
+        # Extract inputs and labels
+        batch_inputs = [s[0] for s in samples]
         batch_labels = torch.stack([s[1] for s in samples])
         
-        return batch_features, batch_labels
+        return batch_inputs, batch_labels
     
     def __len__(self):
         return len(self.buffer)
 
 
 class OnlineLearner:
-    """Online learning system for continuous model updates"""
+    """Online learning system for continuous model updates
+    
+    EXPERIMENTAL: This component is optional for V1.
+    Start with stable offline training first.
+    """
     
     def __init__(
         self,
@@ -56,102 +68,67 @@ class OnlineLearner:
         self.update_frequency = update_frequency
         self.learning_rate = learning_rate
         
-        # Experience replay buffer
         self.experience_buffer = ExperienceReplayBuffer(experience_buffer_size)
+        self.optimizer = Adam(self.model.parameters(), lr=learning_rate)
         
-        # Optimizer with cosine annealing
-        self.optimizer = Adam(model.parameters(), lr=learning_rate)
-        
-        # Loss function
-        from .loss_functions import MultiLabelFocalLoss
-        self.criterion = MultiLabelFocalLoss()
-        
-        # Tracking
-        self.events_since_update = 0
+        self.samples_since_update = 0
         self.total_updates = 0
-        self.update_history = []
         
-        logger.info(f"OnlineLearner initialized: lr={learning_rate}, batch_size={batch_size}, "
-                   f"update_freq={update_frequency}, buffer_size={experience_buffer_size}")
+        logger.info(f"OnlineLearner initialized (EXPERIMENTAL)")
+        logger.warning("Online learning is experimental. Use offline training for V1.")
     
-    def add_experience(self, features: Dict[str, torch.Tensor], labels: torch.Tensor):
-        """Add new experience and trigger update if needed"""
-        # Move to device
-        features_device = {k: v.to(self.device) for k, v in features.items()}
-        labels_device = labels.to(self.device)
-        
-        self.experience_buffer.add(features_device, labels_device)
-        self.events_since_update += 1
+    def add_sample(self, model_input: ModelInput, labels: torch.Tensor):
+        """Add new sample to experience buffer"""
+        self.experience_buffer.add(model_input, labels)
+        self.samples_since_update += 1
         
         # Check if we should update
-        if self.events_since_update >= self.update_frequency:
+        if self.samples_since_update >= self.update_frequency:
             self.update_model()
-            self.events_since_update = 0
     
-    def update_model(self):
-        """Perform one update step using experience replay"""
+    def update_model(self) -> float:
+        """Update model weights using experience replay"""
         if len(self.experience_buffer) < self.batch_size:
-            logger.debug(f"Buffer too small ({len(self.experience_buffer)}), skipping update")
-            return
+            logger.warning("Not enough samples in buffer for update")
+            return 0.0
         
-        # Sample batch
-        features, labels = self.experience_buffer.sample(self.batch_size)
+        self.model.train()
+        
+        # Sample batch from buffer
+        batch_inputs, batch_labels = self.experience_buffer.sample(self.batch_size)
         
         # Forward pass
-        self.model.train()
-        outputs = self.model(features)
-        
-        # Compute loss
-        loss = self.criterion(outputs['interests'], labels)
-        
-        # Backward pass
         self.optimizer.zero_grad()
-        loss.backward()
         
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        # Process each input in batch
+        losses = []
+        for model_input in batch_inputs:
+            model_output = self.model(model_input)
+            # Assuming model_output has predictions attribute
+            if hasattr(model_output, 'predictions'):
+                loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                    model_output.predictions, batch_labels
+                )
+                losses.append(loss)
         
-        self.optimizer.step()
+        if losses:
+            avg_loss = torch.stack(losses).mean()
+            avg_loss.backward()
+            self.optimizer.step()
+            
+            self.total_updates += 1
+            self.samples_since_update = 0
+            
+            logger.info(f"Online update #{self.total_updates}, loss: {avg_loss.item():.4f}")
+            return avg_loss.item()
         
-        # Track update
-        self.total_updates += 1
-        self.update_history.append({
-            'update_id': self.total_updates,
-            'loss': loss.item(),
-            'timestamp': datetime.now().isoformat(),
-            'buffer_size': len(self.experience_buffer)
-        })
-        
-        logger.info(f"Online update #{self.total_updates}: loss={loss.item():.4f}, "
-                   f"buffer_size={len(self.experience_buffer)}")
+        return 0.0
     
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> Dict[str, Any]:
         """Get online learning statistics"""
         return {
-            'total_updates': self.total_updates,
-            'buffer_size': len(self.experience_buffer),
-            'events_since_update': self.events_since_update,
-            'learning_rate': self.learning_rate,
-            'recent_losses': [u['loss'] for u in self.update_history[-10:]]
+            "buffer_size": len(self.experience_buffer),
+            "samples_since_update": self.samples_since_update,
+            "total_updates": self.total_updates,
+            "update_frequency": self.update_frequency
         }
-    
-    def save_checkpoint(self, path: str):
-        """Save online learner state"""
-        checkpoint = {
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'total_updates': self.total_updates,
-            'update_history': self.update_history,
-            'timestamp': datetime.now().isoformat()
-        }
-        torch.save(checkpoint, path)
-        logger.info(f"Online learner checkpoint saved to {path}")
-    
-    def load_checkpoint(self, path: str):
-        """Load online learner state"""
-        checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.total_updates = checkpoint['total_updates']
-        self.update_history = checkpoint['update_history']
-        logger.info(f"Online learner checkpoint loaded from {path}")

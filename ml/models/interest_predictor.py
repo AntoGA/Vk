@@ -1,13 +1,52 @@
+"""
+Interest Predictor Model - Unified Contract Version.
+
+Архитектура:
+1. Transformer Encoder для последовательности действий пользователя
+2. Graph Attention Network для социального графа
+3. Cross-Attention Fusion для объединения модальностей
+4. Multi-head output для предсказания интересов
+
+Использует единый контракт из ml.contracts:
+- Input: ModelInput (behavior_sequence, graph_data, user_features)
+- Output: ModelOutput (interest_scores, confidence, embeddings)
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
+from dataclasses import dataclass
+
 from .transformer_encoder import TransformerEncoder
 from .graph_attention import GraphAttentionNetwork
+from ml.contracts import ModelInput, ModelOutput
+
+
+@dataclass
+class ModelConfig:
+    """Конфигурация модели"""
+    n_interests: int = 500
+    d_model: int = 256
+    n_heads: int = 8
+    n_layers: int = 6
+    dropout: float = 0.1
+    max_seq_len: int = 100
+    n_user_features: int = 50
+    
+    # Graph Attention Network
+    gat_hidden_dim: int = 128
+    gat_n_layers: int = 3
+    gat_n_heads: int = 4
+    
+    # Output heads
+    confidence_head: bool = True
+    embedding_head: bool = True
+    embedding_dim: int = 128
 
 
 class CrossAttentionFusion(nn.Module):
-    """Cross-attention fusion for combining different modalities"""
+    """Cross-attention fusion для объединения Transformer и GAT выходов"""
     
     def __init__(self, d_model: int = 512, n_heads: int = 8, dropout: float = 0.1):
         super().__init__()
@@ -37,10 +76,15 @@ class CrossAttentionFusion(nn.Module):
         value: torch.Tensor
     ) -> torch.Tensor:
         """
+        Cross-attention fusion.
+        
         Args:
-            query: [batch_size, seq_len, d_model]
-            key: [batch_size, seq_len, d_model]
-            value: [batch_size, seq_len, d_model]
+            query: [batch_size, seq_len, d_model] - transformer output
+            key: [batch_size, seq_len, d_model] - GAT output
+            value: [batch_size, seq_len, d_model] - GAT output
+            
+        Returns:
+            fused: [batch_size, seq_len, d_model]
         """
         # Cross attention
         attn_out, _ = self.cross_attn(query, key, value)
@@ -54,206 +98,220 @@ class CrossAttentionFusion(nn.Module):
 
 
 class InterestPredictor(nn.Module):
-    """Main interest prediction model with multi-head output"""
+    """
+    Основная модель предсказания интересов.
     
-    def __init__(
-        self,
-        n_interests: int = 500,
-        d_model: int = 256,
-        n_heads: int = 8,
-        n_layers: int = 6,
-        d_ff: int = 1024,
-        dropout: float = 0.1,
-        max_seq_len: int = 100,
-        graph_hidden_dim: int = 128,
-        graph_n_layers: int = 3,
-        graph_n_heads: int = 4,
-        fusion_dim: int = 512
-    ):
+    Архитектура:
+    1. Behavior Encoder (Transformer) - кодирует последовательность действий
+    2. Graph Encoder (GAT) - кодирует социальный граф
+    3. Cross-Attention Fusion - объединяет обе модальности
+    4. Multi-head Output:
+       - Interest Head: предсказание интересов (multi-label)
+       - Confidence Head: уверенность предсказания
+       - Embedding Head: user embedding для downstream задач
+    """
+    
+    def __init__(self, config: ModelConfig):
         super().__init__()
+        self.config = config
         
-        # Feature dimensions
-        self.profile_dim = 50  # Demographics, location, etc.
-        self.action_dim = 100  # Action type, content features
-        self.graph_dim = 64    # Graph node features
-        
-        # Input projections
-        self.profile_proj = nn.Linear(self.profile_dim, d_model)
-        self.action_proj = nn.Linear(self.action_dim, d_model)
-        self.graph_proj = nn.Linear(self.graph_dim, d_model)
-        
-        # Sequential encoder (Transformer)
-        self.transformer = TransformerEncoder(
-            d_model=d_model,
-            n_heads=n_heads,
-            n_layers=n_layers,
-            d_ff=d_ff,
-            dropout=dropout,
-            max_seq_len=max_seq_len
+        # Behavior sequence encoder (Transformer)
+        self.behavior_encoder = TransformerEncoder(
+            d_model=config.d_model,
+            n_heads=config.n_heads,
+            n_layers=config.n_layers,
+            d_ff=config.d_model * 4,
+            dropout=config.dropout,
+            max_seq_len=config.max_seq_len
         )
         
         # Graph encoder (GAT)
-        self.gat = GraphAttentionNetwork(
-            in_features=d_model,
-            hidden_dim=graph_hidden_dim,
-            n_layers=graph_n_layers,
-            n_heads=graph_n_heads,
-            dropout=dropout
+        self.graph_encoder = GraphAttentionNetwork(
+            in_features=config.n_user_features,
+            hidden_dim=config.gat_hidden_dim,
+            out_features=config.d_model,
+            n_layers=config.gat_n_layers,
+            n_heads=config.gat_n_heads,
+            dropout=config.dropout
         )
         
-        # Fusion layer
+        # Cross-attention fusion
         self.fusion = CrossAttentionFusion(
-            d_model=fusion_dim,
-            n_heads=n_heads,
-            dropout=dropout
+            d_model=config.d_model,
+            n_heads=config.n_heads,
+            dropout=config.dropout
         )
-        
-        # Projection to fusion dimension
-        self.transformer_proj = nn.Linear(d_model, fusion_dim)
-        self.gat_proj = nn.Linear(graph_hidden_dim, fusion_dim)
         
         # Output heads
-        # Head 1: Interest prediction (multi-label)
         self.interest_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 2),
+            nn.Linear(config.d_model, config.d_model * 2),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 2, n_interests)
+            nn.Dropout(config.dropout),
+            nn.Linear(config.d_model * 2, config.n_interests)
         )
         
-        # Head 2: Confidence estimation
-        self.confidence_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 4),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 4, n_interests),
-            nn.Sigmoid()
-        )
+        if config.confidence_head:
+            self.confidence_head = nn.Sequential(
+                nn.Linear(config.d_model, config.d_model // 2),
+                nn.ReLU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.d_model // 2, 1),
+                nn.Sigmoid()
+            )
+        else:
+            self.confidence_head = None
         
-        # Head 3: Next action prediction
-        self.action_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 2, 20)  # 20 action types
-        )
+        if config.embedding_head:
+            self.embedding_head = nn.Sequential(
+                nn.Linear(config.d_model, config.embedding_dim),
+                nn.ReLU(),
+                nn.Dropout(config.dropout)
+            )
+        else:
+            self.embedding_head = None
         
-        # Head 4: Segment classification
-        self.segment_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 4),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 4, 10)  # 10 segment types
+        # User features projection
+        self.user_features_proj = nn.Linear(
+            config.n_user_features, 
+            config.d_model
         )
     
-    def forward(
-        self,
-        profile: torch.Tensor,
-        actions: torch.Tensor,
-        action_mask: Optional[torch.Tensor] = None,
-        graph_features: Optional[torch.Tensor] = None,
-        adj_matrix: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
+    def forward(self, model_input: ModelInput) -> ModelOutput:
         """
+        Forward pass с единым контрактом.
+        
         Args:
-            profile: User profile features [batch_size, profile_dim]
-            actions: Action sequence [batch_size, seq_len, action_dim]
-            action_mask: Mask for valid actions [batch_size, seq_len]
-            graph_features: Social graph features [batch_size, n_nodes, graph_dim]
-            adj_matrix: Adjacency matrix [batch_size, n_nodes, n_nodes]
-        
+            model_input: ModelInput с behavior_sequence, graph_data, user_features
+            
         Returns:
-            Dictionary with predictions from all heads
+            ModelOutput с interest_scores, confidence, embeddings
         """
-        batch_size = profile.shape[0]
+        batch_size = model_input.behavior_sequence.size(0)
         
-        # Encode profile
-        profile_emb = self.profile_proj(profile).unsqueeze(1)  # [B, 1, d_model]
+        # 1. Encode behavior sequence
+        # behavior_sequence: [batch_size, seq_len, feature_dim]
+        behavior_encoded = self.behavior_encoder(
+            model_input.behavior_sequence,
+            mask=model_input.behavior_mask
+        )
+        # behavior_encoded: [batch_size, seq_len, d_model]
         
-        # Encode actions
-        action_emb = self.action_proj(actions)  # [B, seq_len, d_model]
-        
-        # Prepend profile to actions
-        combined = torch.cat([profile_emb, action_emb], dim=1)
-        
-        if action_mask is not None:
-            # Add profile to mask
-            profile_mask = torch.ones(batch_size, 1, device=action_mask.device)
-            combined_mask = torch.cat([profile_mask, action_mask], dim=1)
+        # 2. Encode graph
+        # graph_data: dict с node_features, edge_index, edge_weights
+        if model_input.graph_data is not None:
+            graph_encoded = self.graph_encoder(
+                model_input.graph_data['node_features'],
+                model_input.graph_data['edge_index'],
+                model_input.graph_data.get('edge_weights')
+            )
+            # graph_encoded: [n_nodes, d_model]
+            # TODO: aggregate graph embeddings per user
+            # For now, use mean pooling
+            graph_encoded = graph_encoded.mean(dim=0, keepdim=True)
+            graph_encoded = graph_encoded.unsqueeze(0).expand(batch_size, -1, -1)
+            # graph_encoded: [batch_size, 1, d_model]
         else:
-            combined_mask = None
+            # No graph data, use zeros
+            graph_encoded = torch.zeros(
+                batch_size, 1, self.config.d_model,
+                device=model_input.behavior_sequence.device
+            )
         
-        # Transformer encoding
-        transformer_out = self.transformer(combined, combined_mask)
+        # 3. Cross-attention fusion
+        # Fuse behavior and graph representations
+        fused = self.fusion(
+            query=behavior_encoded,
+            key=graph_encoded,
+            value=graph_encoded
+        )
+        # fused: [batch_size, seq_len, d_model]
         
-        # Get sequence representation (mean pooling)
-        if combined_mask is not None:
-            mask_expanded = combined_mask.unsqueeze(-1)
-            transformer_repr = (transformer_out * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
+        # 4. Aggregate sequence (mean pooling)
+        if model_input.behavior_mask is not None:
+            # Masked mean pooling
+            mask_expanded = model_input.behavior_mask.unsqueeze(-1).float()
+            fused_masked = fused * mask_expanded
+            user_embedding = fused_masked.sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1)
         else:
-            transformer_repr = transformer_out.mean(dim=1)
+            # Simple mean pooling
+            user_embedding = fused.mean(dim=1)
+        # user_embedding: [batch_size, d_model]
         
-        # Graph encoding (if available)
-        if graph_features is not None and adj_matrix is not None:
-            graph_emb = self.graph_proj(graph_features)
-            gat_out = self.gat(graph_emb, adj_matrix)
-            graph_repr = gat_out.mean(dim=1)  # Global average pooling
-        else:
-            graph_repr = torch.zeros(batch_size, self.gat.layers[-1].out_features, 
-                                    device=profile.device)
+        # 5. Add user features
+        if model_input.user_features is not None:
+            user_features_proj = self.user_features_proj(model_input.user_features)
+            user_embedding = user_embedding + user_features_proj
         
-        # Project to fusion dimension
-        transformer_proj = self.transformer_proj(transformer_repr)
-        graph_proj = self.gat_proj(graph_repr)
+        # 6. Output heads
+        interest_scores = self.interest_head(user_embedding)
+        # interest_scores: [batch_size, n_interests]
         
-        # Fusion
-        transformer_proj = transformer_proj.unsqueeze(1)
-        graph_proj = graph_proj.unsqueeze(1)
+        confidence = None
+        if self.confidence_head is not None:
+            confidence = self.confidence_head(user_embedding).squeeze(-1)
+            # confidence: [batch_size]
         
-        fused = self.fusion(transformer_proj, graph_proj, graph_proj)
-        fused = fused.squeeze(1)
+        embeddings = None
+        if self.embedding_head is not None:
+            embeddings = self.embedding_head(user_embedding)
+            # embeddings: [batch_size, embedding_dim]
         
-        # Generate predictions
-        interest_logits = self.interest_head(fused)
-        confidence = self.confidence_head(fused)
-        action_logits = self.action_head(fused)
-        segment_logits = self.segment_head(fused)
-        
-        return {
-            'interest_logits': interest_logits,
-            'confidence': confidence,
-            'action_logits': action_logits,
-            'segment_logits': segment_logits,
-            'embedding': fused
-        }
+        return ModelOutput(
+            interest_scores=interest_scores,
+            confidence=confidence,
+            embeddings=embeddings
+        )
     
     def predict(
         self,
-        profile: torch.Tensor,
-        actions: torch.Tensor,
-        action_mask: Optional[torch.Tensor] = None,
-        graph_features: Optional[torch.Tensor] = None,
-        adj_matrix: Optional[torch.Tensor] = None,
-        threshold: float = 0.5
+        model_input: ModelInput,
+        threshold: float = 0.5,
+        top_k: Optional[int] = None
     ) -> Dict[str, torch.Tensor]:
-        """Generate predictions with thresholding"""
-        outputs = self.forward(profile, actions, action_mask, graph_features, adj_matrix)
+        """
+        Inference с пост-обработкой.
         
-        # Apply sigmoid to interest logits
-        interest_probs = torch.sigmoid(outputs['interest_logits'])
-        
-        # Apply threshold
-        interest_pred = (interest_probs >= threshold).float()
-        
-        # Apply softmax to action and segment logits
-        action_probs = F.softmax(outputs['action_logits'], dim=-1)
-        segment_probs = F.softmax(outputs['segment_logits'], dim=-1)
-        
-        return {
-            'interests': interest_pred,
-            'interest_probs': interest_probs,
-            'confidence': outputs['confidence'],
-            'action_probs': action_probs,
-            'segment_probs': segment_probs,
-            'embedding': outputs['embedding']
-        }
+        Args:
+            model_input: входные данные
+            threshold: порог для бинаризации интересов
+            top_k: вернуть только top-k интересов
+            
+        Returns:
+            dict с interest_probs, predicted_interests, confidence
+        """
+        self.eval()
+        with torch.no_grad():
+            output = self.forward(model_input)
+            
+            # Apply sigmoid for probabilities
+            interest_probs = torch.sigmoid(output.interest_scores)
+            
+            # Binary predictions
+            predicted_interests = (interest_probs >= threshold).long()
+            
+            # Top-k filtering
+            if top_k is not None:
+                top_k_values, top_k_indices = torch.topk(
+                    interest_probs, 
+                    k=min(top_k, interest_probs.size(-1)),
+                    dim=-1
+                )
+                
+                # Create sparse predictions
+                predicted_interests = torch.zeros_like(predicted_interests)
+                predicted_interests.scatter_(1, top_k_indices, 1)
+            
+            return {
+                'interest_probs': interest_probs,
+                'predicted_interests': predicted_interests,
+                'confidence': output.confidence,
+                'embeddings': output.embeddings
+            }
+    
+    def get_num_params(self) -> int:
+        """Вернуть количество параметров модели"""
+        return sum(p.numel() for p in self.parameters())
+    
+    def get_trainable_params(self) -> int:
+        """Вернуть количество обучаемых параметров"""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)

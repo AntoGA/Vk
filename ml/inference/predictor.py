@@ -1,3 +1,11 @@
+"""
+Inference Predictor - использует единый контракт (ModelInput, ModelOutput).
+
+Отвечает за:
+- Быстрый inference (<100ms)
+- Кэширование
+- Батчинг запросов
+"""
 import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Any
@@ -5,13 +13,16 @@ import time
 import logging
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime
+
+from ml.contracts import ModelInput, ModelOutput
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class PredictionResult:
-    """Result of interest prediction"""
+    """Результат предсказания для API"""
     user_id: int
     interests: Dict[str, float]  # interest_id -> probability
     confidence: float
@@ -20,9 +31,9 @@ class PredictionResult:
 
 
 class InterestPredictorService:
-    """Service for real-time interest prediction
+    """Сервис для real-time предсказания интересов
     
-    Provides <100ms inference with caching and optimization
+    Обеспечивает <100ms inference с кэшированием и оптимизацией
     """
     
     def __init__(
@@ -39,7 +50,7 @@ class InterestPredictorService:
         
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
-        self.cache = {}
+        self.cache = {}  # user_id -> (ModelOutput, timestamp)
         
         logger.info(f"InterestPredictorService initialized on {device}")
     
@@ -49,219 +60,140 @@ class InterestPredictorService:
         return_all: bool = False,
         top_k: int = 10
     ) -> PredictionResult:
-        """Predict interests for a single user
+        """Предсказать интересы для одного пользователя
         
         Args:
-            user_features: User features dict
-            return_all: Return all interests or top-k
-            top_k: Number of top interests to return
+            user_features: Dict с features пользователя
+            return_all: Вернуть все интересы или top-k
+            top_k: Количество топ интересов
             
         Returns:
-            PredictionResult with interests and metadata
+            PredictionResult с интересами и метаданными
         """
         start_time = time.time()
         
-        user_id = user_features.get("vk_id", 0)
+        user_id = user_features.get("user_id", 0)
         
-        # Check cache
+        # Проверить кэш
         if self.cache_enabled and user_id in self.cache:
-            cached_result = self.cache[user_id]
-            if time.time() - cached_result.timestamp < self.cache_ttl:
+            cached_output, cached_time = self.cache[user_id]
+            if time.time() - cached_time < self.cache_ttl:
                 logger.debug(f"Cache hit for user {user_id}")
-                return cached_result
+                latency_ms = (time.time() - start_time) * 1000
+                return self._output_to_result(
+                    cached_output, 
+                    user_id, 
+                    latency_ms,
+                    return_all,
+                    top_k
+                )
         
-        # Prepare input tensors
+        # Создать ModelInput из user_features
+        model_input = self._features_to_model_input(user_features)
+        
+        # Inference
         with torch.no_grad():
-            # Convert features to tensors
-            profile_tensor = self._prepare_profile(user_features)
-            behavior_tensor = self._prepare_behavior(user_features)
-            graph_tensor = self._prepare_graph(user_features)
-            
-            # Run inference
-            outputs = self.model(
-                profile=profile_tensor,
-                behavior_seq=behavior_tensor,
-                graph_data=graph_tensor
-            )
-            
-            # Extract predictions
-            interest_probs = torch.sigmoid(outputs["interest"]).squeeze().cpu().numpy()
-            confidence = outputs.get("confidence", torch.tensor([0.5])).item()
+            model_output = self.model(model_input)
         
-        # Format results
-        interests = self._format_interests(interest_probs, return_all, top_k)
+        # Обновить кэш
+        if self.cache_enabled:
+            self.cache[user_id] = (model_output, time.time())
         
         latency_ms = (time.time() - start_time) * 1000
         
-        result = PredictionResult(
+        return self._output_to_result(
+            model_output,
+            user_id,
+            latency_ms,
+            return_all,
+            top_k
+        )
+    
+    def _features_to_model_input(self, user_features: Dict[str, Any]) -> ModelInput:
+        """Конвертировать user_features в ModelInput"""
+        # Извлечь action sequence
+        action_sequence = user_features.get("action_sequence", [])
+        if action_sequence:
+            action_sequence = torch.tensor(action_sequence, dtype=torch.float32)
+            action_mask = torch.ones(len(action_sequence), dtype=torch.bool)
+        else:
+            action_sequence = torch.zeros(1, 10, dtype=torch.float32)  # dummy
+            action_mask = torch.zeros(1, dtype=torch.bool)
+        
+        # Извлечь graph features
+        user_embedding = user_features.get("user_embedding", [0.0] * 256)
+        user_embedding = torch.tensor(user_embedding, dtype=torch.float32)
+        
+        neighbor_embeddings = user_features.get("neighbor_embeddings", [])
+        if neighbor_embeddings:
+            neighbor_embeddings = torch.tensor(neighbor_embeddings, dtype=torch.float32)
+            edge_index = user_features.get("edge_index", [[0], list(range(len(neighbor_embeddings)))])
+            edge_index = torch.tensor(edge_index, dtype=torch.long)
+        else:
+            neighbor_embeddings = torch.zeros(1, 256, dtype=torch.float32)  # dummy
+            edge_index = torch.tensor([[0], [0]], dtype=torch.long)
+        
+        return ModelInput(
+            action_sequence=action_sequence.unsqueeze(0),  # add batch dim
+            action_mask=action_mask.unsqueeze(0),
+            user_embedding=user_embedding.unsqueeze(0),
+            neighbor_embeddings=neighbor_embeddings.unsqueeze(0),
+            edge_index=edge_index,
+            user_id=user_features.get("user_id", 0)
+        )
+    
+    def _output_to_result(
+        self,
+        output: ModelOutput,
+        user_id: int,
+        latency_ms: float,
+        return_all: bool,
+        top_k: int
+    ) -> PredictionResult:
+        """Конвертировать ModelOutput в PredictionResult"""
+        # Получить вероятности
+        probs = output.interest_probs.squeeze(0).cpu().numpy()
+        
+        # Создать dict интересов
+        if return_all:
+            interests = {f"interest_{i}": float(p) for i, p in enumerate(probs)}
+        else:
+            # Top-k
+            top_indices = probs.argsort()[-top_k:][::-1]
+            interests = {f"interest_{i}": float(probs[i]) for i in top_indices}
+        
+        # Confidence = max probability
+        confidence = float(probs.max())
+        
+        return PredictionResult(
             user_id=user_id,
             interests=interests,
             confidence=confidence,
             latency_ms=latency_ms,
             timestamp=time.time()
         )
-        
-        # Update cache
-        if self.cache_enabled:
-            self.cache[user_id] = result
-            self._cleanup_cache()
-        
-        logger.info(f"Prediction for user {user_id}: {latency_ms:.2f}ms")
-        
-        return result
     
     def predict_batch(
         self,
         users_features: List[Dict[str, Any]],
-        batch_size: int = 32
+        return_all: bool = False,
+        top_k: int = 10
     ) -> List[PredictionResult]:
-        """Predict interests for multiple users
-        
-        Args:
-            users_features: List of user features
-            batch_size: Batch size for inference
-            
-        Returns:
-            List of PredictionResult
-        """
+        """Предсказать интересы для батча пользователей"""
         results = []
-        
-        for i in range(0, len(users_features), batch_size):
-            batch = users_features[i:i + batch_size]
-            batch_results = self._predict_batch(batch)
-            results.extend(batch_results)
-        
-        return results
-    
-    def _predict_batch(
-        self,
-        batch_features: List[Dict[str, Any]]
-    ) -> List[PredictionResult]:
-        """Internal batch prediction"""
-        start_time = time.time()
-        
-        with torch.no_grad():
-            # Prepare batch tensors
-            profile_batch = torch.stack([
-                self._prepare_profile(f) for f in batch_features
-            ])
-            behavior_batch = torch.stack([
-                self._prepare_behavior(f) for f in batch_features
-            ])
-            graph_batch = torch.stack([
-                self._prepare_graph(f) for f in batch_features
-            ])
-            
-            # Batch inference
-            outputs = self.model(
-                profile=profile_batch,
-                behavior_seq=behavior_batch,
-                graph_data=graph_batch
-            )
-            
-            interest_probs = torch.sigmoid(outputs["interest"]).cpu().numpy()
-            confidences = outputs.get("confidence", torch.ones(len(batch_features)) * 0.5).cpu().numpy()
-        
-        latency_ms = (time.time() - start_time) * 1000
-        avg_latency = latency_ms / len(batch_features)
-        
-        results = []
-        for i, features in enumerate(batch_features):
-            interests = self._format_interests(interest_probs[i], False, 10)
-            
-            result = PredictionResult(
-                user_id=features.get("vk_id", 0),
-                interests=interests,
-                confidence=float(confidences[i]),
-                latency_ms=avg_latency,
-                timestamp=time.time()
-            )
+        for user_features in users_features:
+            result = self.predict(user_features, return_all, top_k)
             results.append(result)
-        
         return results
     
-    def _prepare_profile(self, features: Dict[str, Any]) -> torch.Tensor:
-        """Prepare profile features tensor"""
-        # Example: age, gender, city, etc.
-        profile_data = [
-            features.get("age", 0) / 100.0,
-            1.0 if features.get("gender") == "male" else 0.0,
-            features.get("friends_count", 0) / 1000.0,
-            features.get("groups_count", 0) / 100.0,
-        ]
-        return torch.tensor(profile_data, dtype=torch.float32).unsqueeze(0).to(self.device)
+    def clear_cache(self):
+        """Очистить кэш"""
+        self.cache.clear()
+        logger.info("Cache cleared")
     
-    def _prepare_behavior(self, features: Dict[str, Any]) -> torch.Tensor:
-        """Prepare behavior sequence tensor"""
-        # Example: sequence of actions
-        behavior_seq = features.get("behavior_sequence", [])
-        if not behavior_seq:
-            return torch.zeros((1, 100, 32), dtype=torch.float32).to(self.device)
-        
-        # Pad or truncate to max_seq_len
-        max_len = 100
-        seq = behavior_seq[:max_len]
-        if len(seq) < max_len:
-            seq.extend([[0.0] * 32] * (max_len - len(seq)))
-        
-        return torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(self.device)
-    
-    def _prepare_graph(self, features: Dict[str, Any]) -> torch.Tensor:
-        """Prepare graph features tensor"""
-        # Example: friend embeddings
-        graph_data = features.get("graph_features", [])
-        if not graph_data:
-            return torch.zeros((1, 50, 64), dtype=torch.float32).to(self.device)
-        
-        # Pad or truncate
-        max_nodes = 50
-        nodes = graph_data[:max_nodes]
-        if len(nodes) < max_nodes:
-            nodes.extend([[0.0] * 64] * (max_nodes - len(nodes)))
-        
-        return torch.tensor(nodes, dtype=torch.float32).unsqueeze(0).to(self.device)
-    
-    def _format_interests(
-        self,
-        probs: List[float],
-        return_all: bool,
-        top_k: int
-    ) -> Dict[str, float]:
-        """Format interest probabilities"""
-        # Map indices to interest IDs
-        # This should be loaded from interest_hierarchy.json
-        interest_ids = [f"interest_{i}" for i in range(len(probs))]
-        
-        if return_all:
-            return {iid: float(p) for iid, p in zip(interest_ids, probs)}
-        
-        # Top-k interests
-        sorted_indices = sorted(range(len(probs)), key=lambda i: probs[i], reverse=True)
-        top_indices = sorted_indices[:top_k]
-        
-        return {interest_ids[i]: float(probs[i]) for i in top_indices}
-    
-    def _cleanup_cache(self):
-        """Remove expired cache entries"""
-        current_time = time.time()
-        expired_keys = [
-            k for k, v in self.cache.items()
-            if current_time - v.timestamp > self.cache_ttl
-        ]
-        for key in expired_keys:
-            del self.cache[key]
-    
-    def load_model(self, model_path: str):
-        """Load model from checkpoint"""
-        checkpoint = torch.load(model_path, map_location=self.device)
+    def load_checkpoint(self, checkpoint_path: str):
+        """Загрузить модель из checkpoint"""
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.eval()
-        logger.info(f"Model loaded from {model_path}")
-    
-    def update_model(self, new_model: nn.Module):
-        """Hot-swap model (for online learning)"""
-        self.model = new_model
-        self.model.to(self.device)
-        self.model.eval()
-        self.cache.clear()
-        logger.info("Model updated")
+        logger.info(f"Loaded checkpoint from {checkpoint_path}")
