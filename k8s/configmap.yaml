@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vk-config
+  namespace: vk-interest-predictor
+data:
+  VK_API_VERSION: "5.199"
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  DASHBOARD_PORT: "8501"
+  LOG_LEVEL: "INFO"
+  MODEL_PATH: "/app/models/best_model.pt"
+  DEVICE: "cpu"
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
