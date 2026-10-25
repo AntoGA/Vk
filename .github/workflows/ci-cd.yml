@@ -32,7 +32,7 @@ jobs:
       - name: E2E smoke run
         run: python scripts/run_e2e_pipeline.py --num-users 32 --epochs 1 --batch-size 8 --output-dir artifacts/ci-e2e
       - name: Benchmark smoke run
-        run: python scripts/benchmark.py --warmup 1 --runs 3 --batch-size 1 --output artifacts/ci-benchmark.json
+        run: python scripts/benchmark.py --model artifacts/ci-e2e/model.pt --device cpu --warmup 1 --num-runs 3 --batch-size 1 --output artifacts/ci-benchmark.json
       - name: Validate benchmark artifact
         run: |
           python - <<'PY'
@@ -40,8 +40,9 @@ jobs:
           from pathlib import Path
           p = Path('artifacts/ci-benchmark.json')
           data = json.loads(p.read_text())
-          assert data['runs'] == 3
+          assert data['measured_runs'] == 3
           assert data['latency_ms']['p50'] >= 0
-          assert 'git_commit' in data
+          assert data['commit_sha']
+          assert data['checkpoint'] == 'artifacts/ci-e2e/model.pt'
           print(data)
           PY
