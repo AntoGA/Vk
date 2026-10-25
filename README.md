@@ -124,3 +124,25 @@ If those are absent, treat the number as an example or target, not as a measured
 ## License
 
 The project metadata declares MIT; a LICENSE file is not currently included.
+
+## Inference integration validation
+
+`InterestPredictorService`, `BatchProcessor` and the CPU preparation/benchmark
+path of `ModelOptimizer` use `ModelInput` / `ModelOutput`.
+Submit `BatchRequest(request_id, features=single_item_model_input)` after
+`processor.start()`; `get_result(id)` returns a single-item `ModelOutput` or
+raises the worker error. `stop()` drains accepted requests; if draining exceeds
+five seconds it raises `TimeoutError` and the worker continues draining.
+Sequence lengths may differ; graph node counts and feature dimensions must match
+within a batch. Mixed graph sizes are rejected because graph-node padding masks
+are not implemented. A failed batch propagates the error to every request in it.
+Do not mutate submitted inputs while the worker is processing them.
+
+CPU inference preparation and timing are tested. CUDA FP16 and `torch.compile`
+remain unvalidated optional paths; compile/warmup failures propagate to the caller.
+`export_onnx` explicitly raises `NotImplementedError` until an exporter and
+runtime parity tests are implemented. No sub-100ms guarantee is made.
+
+Validation history:
+- [Core audit](docs/reports/2026-10-25-pr6-audit.md)
+- [Batch/optimizer integration](docs/reports/2026-10-25-inference-integration.md)
