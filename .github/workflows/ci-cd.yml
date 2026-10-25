@@ -9,8 +9,11 @@ jobs:
   reproducible-poc:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,11 +23,12 @@ jobs:
       - name: Install minimal test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install torch pytest
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install pytest numpy
       - name: Compile changed ML path
         run: python -m compileall ml scripts tests
       - name: Contract and checkpoint tests
-        run: pytest -q tests/test_model_contract.py
+        run: python -m pytest -q tests/test_model_contract.py
       - name: E2E smoke run
         run: python scripts/run_e2e_pipeline.py --num-users 32 --epochs 1 --batch-size 8 --output-dir artifacts/ci-e2e
       - name: Benchmark smoke run
