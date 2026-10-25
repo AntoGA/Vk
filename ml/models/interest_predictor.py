@@ -1,259 +1,118 @@
+"""Hybrid Transformer + graph-attention interest predictor."""
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, Optional
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict, Optional, Tuple
-from .transformer_encoder import TransformerEncoder
+
+from ml.contracts import ModelInput, ModelOutput
 from .graph_attention import GraphAttentionNetwork
+from .transformer_encoder import TransformerEncoder
+
+
+@dataclass
+class ModelConfig:
+    n_interests: int = 100
+    action_dim: int = 64
+    node_dim: int = 32
+    d_model: int = 128
+    n_heads: int = 4
+    n_layers: int = 2
+    dropout: float = 0.1
+    max_seq_len: int = 100
+    gat_hidden_dim: int = 128
+    gat_n_layers: int = 3
+    gat_n_heads: int = 4
+    embedding_dim: int = 128
 
 
 class CrossAttentionFusion(nn.Module):
-    """Cross-attention fusion for combining different modalities"""
-    
-    def __init__(self, d_model: int = 512, n_heads: int = 8, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, dropout: float):
         super().__init__()
-        
-        self.cross_attn = nn.MultiheadAttention(
-            embed_dim=d_model,
-            num_heads=n_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-        
-        self.layer_norm1 = nn.LayerNorm(d_model)
-        self.layer_norm2 = nn.LayerNorm(d_model)
-        
+        self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * 4, d_model),
-            nn.Dropout(dropout)
+            nn.Linear(d_model, d_model * 4), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(d_model * 4, d_model), nn.Dropout(dropout),
         )
-    
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Args:
-            query: [batch_size, seq_len, d_model]
-            key: [batch_size, seq_len, d_model]
-            value: [batch_size, seq_len, d_model]
-        """
-        # Cross attention
-        attn_out, _ = self.cross_attn(query, key, value)
-        query = self.layer_norm1(query + attn_out)
-        
-        # FFN
-        ffn_out = self.ffn(query)
-        query = self.layer_norm2(query + ffn_out)
-        
-        return query
+
+    def forward(self, query: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
+        attended, _ = self.attn(query, key, key, need_weights=False)
+        x = self.norm1(query + attended)
+        return self.norm2(x + self.ffn(x))
 
 
 class InterestPredictor(nn.Module):
-    """Main interest prediction model with multi-head output"""
-    
-    def __init__(
-        self,
-        n_interests: int = 500,
-        d_model: int = 256,
-        n_heads: int = 8,
-        n_layers: int = 6,
-        d_ff: int = 1024,
-        dropout: float = 0.1,
-        max_seq_len: int = 100,
-        graph_hidden_dim: int = 128,
-        graph_n_layers: int = 3,
-        graph_n_heads: int = 4,
-        fusion_dim: int = 512
-    ):
+    def __init__(self, config: Optional[ModelConfig] = None, **kwargs: Any):
         super().__init__()
-        
-        # Feature dimensions
-        self.profile_dim = 50  # Demographics, location, etc.
-        self.action_dim = 100  # Action type, content features
-        self.graph_dim = 64    # Graph node features
-        
-        # Input projections
-        self.profile_proj = nn.Linear(self.profile_dim, d_model)
-        self.action_proj = nn.Linear(self.action_dim, d_model)
-        self.graph_proj = nn.Linear(self.graph_dim, d_model)
-        
-        # Sequential encoder (Transformer)
-        self.transformer = TransformerEncoder(
-            d_model=d_model,
-            n_heads=n_heads,
-            n_layers=n_layers,
-            d_ff=d_ff,
-            dropout=dropout,
-            max_seq_len=max_seq_len
+        if config is not None and kwargs:
+            raise ValueError("pass either config or keyword model parameters, not both")
+        self.config = config or ModelConfig(**kwargs)
+        c = self.config
+
+        self.action_projection = nn.Linear(c.action_dim, c.d_model)
+        self.behavior_encoder = TransformerEncoder(
+            d_model=c.d_model, n_heads=c.n_heads, n_layers=c.n_layers,
+            d_ff=c.d_model * 4, dropout=c.dropout, max_seq_len=c.max_seq_len,
         )
-        
-        # Graph encoder (GAT)
-        self.gat = GraphAttentionNetwork(
-            in_features=d_model,
-            hidden_dim=graph_hidden_dim,
-            n_layers=graph_n_layers,
-            n_heads=graph_n_heads,
-            dropout=dropout
+        self.graph_encoder = GraphAttentionNetwork(
+            in_features=c.node_dim, hidden_dim=c.gat_hidden_dim,
+            n_layers=c.gat_n_layers, n_heads=c.gat_n_heads, dropout=c.dropout,
         )
-        
-        # Fusion layer
-        self.fusion = CrossAttentionFusion(
-            d_model=fusion_dim,
-            n_heads=n_heads,
-            dropout=dropout
-        )
-        
-        # Projection to fusion dimension
-        self.transformer_proj = nn.Linear(d_model, fusion_dim)
-        self.gat_proj = nn.Linear(graph_hidden_dim, fusion_dim)
-        
-        # Output heads
-        # Head 1: Interest prediction (multi-label)
+        self.graph_projection = nn.Linear(c.gat_hidden_dim, c.d_model)
+        self.fusion = CrossAttentionFusion(c.d_model, c.n_heads, c.dropout)
         self.interest_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 2, n_interests)
+            nn.Linear(c.d_model, c.d_model * 2), nn.ReLU(), nn.Dropout(c.dropout),
+            nn.Linear(c.d_model * 2, c.n_interests),
         )
-        
-        # Head 2: Confidence estimation
-        self.confidence_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 4),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 4, n_interests),
-            nn.Sigmoid()
-        )
-        
-        # Head 3: Next action prediction
-        self.action_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 2, 20)  # 20 action types
-        )
-        
-        # Head 4: Segment classification
-        self.segment_head = nn.Sequential(
-            nn.Linear(fusion_dim, fusion_dim // 4),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(fusion_dim // 4, 10)  # 10 segment types
-        )
-    
-    def forward(
-        self,
-        profile: torch.Tensor,
-        actions: torch.Tensor,
-        action_mask: Optional[torch.Tensor] = None,
-        graph_features: Optional[torch.Tensor] = None,
-        adj_matrix: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Args:
-            profile: User profile features [batch_size, profile_dim]
-            actions: Action sequence [batch_size, seq_len, action_dim]
-            action_mask: Mask for valid actions [batch_size, seq_len]
-            graph_features: Social graph features [batch_size, n_nodes, graph_dim]
-            adj_matrix: Adjacency matrix [batch_size, n_nodes, n_nodes]
-        
-        Returns:
-            Dictionary with predictions from all heads
-        """
-        batch_size = profile.shape[0]
-        
-        # Encode profile
-        profile_emb = self.profile_proj(profile).unsqueeze(1)  # [B, 1, d_model]
-        
-        # Encode actions
-        action_emb = self.action_proj(actions)  # [B, seq_len, d_model]
-        
-        # Prepend profile to actions
-        combined = torch.cat([profile_emb, action_emb], dim=1)
-        
-        if action_mask is not None:
-            # Add profile to mask
-            profile_mask = torch.ones(batch_size, 1, device=action_mask.device)
-            combined_mask = torch.cat([profile_mask, action_mask], dim=1)
-        else:
-            combined_mask = None
-        
-        # Transformer encoding
-        transformer_out = self.transformer(combined, combined_mask)
-        
-        # Get sequence representation (mean pooling)
-        if combined_mask is not None:
-            mask_expanded = combined_mask.unsqueeze(-1)
-            transformer_repr = (transformer_out * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1)
-        else:
-            transformer_repr = transformer_out.mean(dim=1)
-        
-        # Graph encoding (if available)
-        if graph_features is not None and adj_matrix is not None:
-            graph_emb = self.graph_proj(graph_features)
-            gat_out = self.gat(graph_emb, adj_matrix)
-            graph_repr = gat_out.mean(dim=1)  # Global average pooling
-        else:
-            graph_repr = torch.zeros(batch_size, self.gat.layers[-1].out_features, 
-                                    device=profile.device)
-        
-        # Project to fusion dimension
-        transformer_proj = self.transformer_proj(transformer_repr)
-        graph_proj = self.gat_proj(graph_repr)
-        
-        # Fusion
-        transformer_proj = transformer_proj.unsqueeze(1)
-        graph_proj = graph_proj.unsqueeze(1)
-        
-        fused = self.fusion(transformer_proj, graph_proj, graph_proj)
-        fused = fused.squeeze(1)
-        
-        # Generate predictions
-        interest_logits = self.interest_head(fused)
-        confidence = self.confidence_head(fused)
-        action_logits = self.action_head(fused)
-        segment_logits = self.segment_head(fused)
-        
+        self.confidence_head = nn.Sequential(nn.Linear(c.d_model, 1), nn.Sigmoid())
+        self.embedding_head = nn.Linear(c.d_model, c.embedding_dim)
+
+    def forward(self, model_input: ModelInput) -> ModelOutput:
+        model_input.validate()
+        actions = self.action_projection(model_input.action_sequence)
+        behavior = self.behavior_encoder(actions, mask=model_input.action_mask)
+        graph = self.graph_encoder(model_input.graph_features, model_input.adjacency_matrix)
+        graph = self.graph_projection(graph)
+        fused = self.fusion(behavior, graph)
+
+        mask = model_input.action_mask.unsqueeze(-1).float()
+        pooled = (fused * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        logits = self.interest_head(pooled)
+        probabilities = torch.sigmoid(logits)
+        confidence = self.confidence_head(pooled).squeeze(-1)
+        embeddings = self.embedding_head(pooled)
+        output = ModelOutput(logits, probabilities, confidence, embeddings)
+        output.validate()
+        return output
+
+    def predict(self, model_input: ModelInput, threshold: float = 0.5, top_k: Optional[int] = None) -> Dict[str, torch.Tensor]:
+        self.eval()
+        with torch.no_grad():
+            output = self(model_input)
+        predicted = (output.interest_probabilities >= threshold).long()
+        if top_k is not None:
+            indices = torch.topk(output.interest_probabilities, min(top_k, output.interest_probabilities.shape[-1]), dim=-1).indices
+            predicted = torch.zeros_like(predicted).scatter_(1, indices, 1)
         return {
-            'interest_logits': interest_logits,
-            'confidence': confidence,
-            'action_logits': action_logits,
-            'segment_logits': segment_logits,
-            'embedding': fused
+            "interest_probs": output.interest_probabilities,
+            "predicted_interests": predicted,
+            "confidence": output.confidence_scores,
+            "embeddings": output.user_embeddings,
         }
-    
-    def predict(
-        self,
-        profile: torch.Tensor,
-        actions: torch.Tensor,
-        action_mask: Optional[torch.Tensor] = None,
-        graph_features: Optional[torch.Tensor] = None,
-        adj_matrix: Optional[torch.Tensor] = None,
-        threshold: float = 0.5
-    ) -> Dict[str, torch.Tensor]:
-        """Generate predictions with thresholding"""
-        outputs = self.forward(profile, actions, action_mask, graph_features, adj_matrix)
-        
-        # Apply sigmoid to interest logits
-        interest_probs = torch.sigmoid(outputs['interest_logits'])
-        
-        # Apply threshold
-        interest_pred = (interest_probs >= threshold).float()
-        
-        # Apply softmax to action and segment logits
-        action_probs = F.softmax(outputs['action_logits'], dim=-1)
-        segment_probs = F.softmax(outputs['segment_logits'], dim=-1)
-        
-        return {
-            'interests': interest_pred,
-            'interest_probs': interest_probs,
-            'confidence': outputs['confidence'],
-            'action_probs': action_probs,
-            'segment_probs': segment_probs,
-            'embedding': outputs['embedding']
-        }
+
+    def checkpoint_payload(self) -> Dict[str, Any]:
+        return {"model_state_dict": self.state_dict(), "model_config": asdict(self.config)}
+
+    @classmethod
+    def load_from_checkpoint(cls, path: str, map_location: str | torch.device = "cpu") -> "InterestPredictor":
+        checkpoint = torch.load(path, map_location=map_location)
+        if "model_config" not in checkpoint:
+            raise ValueError("checkpoint is missing model_config")
+        model = cls(ModelConfig(**checkpoint["model_config"]))
+        model.load_state_dict(checkpoint["model_state_dict"])
+        return model
+
+    def get_num_params(self) -> int:
+        return sum(p.numel() for p in self.parameters())

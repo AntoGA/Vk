@@ -1,225 +1,148 @@
-# VK Interest Predictor System
+# VK Interest Predictor
 
-Система предсказания интересов пользователей ВКонтакте на основе самообучающейся нейросети с real-time inference (<100ms).
+Research / proof-of-concept system for multi-label interest prediction with a hybrid Transformer + Graph Attention architecture.
 
-## 🚀 Возможности
+> **Status: research PoC.** The repository currently uses synthetic data for the reproducible E2E path. It has not been validated on real VK user data, at production traffic, or against a production SLA.
 
-- **Real-time предсказания** — inference < 100ms для 99% запросов
-- **Иерархия интересов** — 3 уровня детализации (категории → подкатегории → микро-интересы)
-- **Online Learning** — непрерывное самообучение на новых данных
-- **Мульти-сегментация** — демографическая, поведенческая, по интересам, predictive
-- **Интерактивный Dashboard** — визуализация метрик и сегментов
-- **VK API интеграция** — автоматический сбор данных через официальный API
+## What is implemented
 
-## 📊 Архитектура
+- shared `ModelInput` / `ModelOutput` contract across the model-facing PoC path;
+- Transformer encoder for action sequences;
+- graph-attention encoder for synthetic social-graph features;
+- cross-attention fusion and multi-label output;
+- deterministic synthetic-data training/evaluation smoke pipeline;
+- checkpoint save/load with model configuration;
+- measured inference benchmark that writes a JSON artifact;
+- API, dashboard, Docker/Kubernetes and online-learning experiments from earlier iterations of the project.
 
-```
-┌─────────────────┐
-│   Dashboard     │  Streamlit
-│   (UI Layer)    │
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│   FastAPI       │  REST API + WebSocket
-│   (API Layer)   │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    │         │
-┌───▼──┐  ┌──▼──────┐
-│Redis │  │PostgreSQL│
-│Cache │  │Database  │
-└───┬──┘  └──────────┘
-    │
-┌───▼──────────────┐
-│  ML Models       │
-│  - Transformer   │
-│  - GAT           │
-│  - Online Learn  │
-└──────────────────┘
-```
+The last group should be treated as **experimental/integration work**, not evidence of production deployment.
 
-## 🗂️ Структура проекта
-
-```
-vk-interest-predictor/
-├── configs/              # YAML конфигурации
-├── data/                 # Схемы данных и процессоры
-│   ├── schemas/         # Pydantic модели
-│   ├── taxonomy/        # Иерархия интересов
-│   └── processors/      # Обработчики данных
-├── ml/                   # Machine Learning
-│   ├── models/          # Архитектуры нейросетей
-│   ├── training/        # Пайплайны обучения
-│   ├── inference/       # Сервинг моделей
-│   └── metrics/         # Метрики качества
-├── api/                  # FastAPI приложение
-│   ├── routes/          # API endpoints
-│   └── middleware/      # Middleware
-├── dashboard/           # Streamlit UI
-│   ├── pages/          # Страницы
-│   └── components/     # UI компоненты
-├── tests/              # Unit и integration тесты
-├── scripts/            # Утилиты и скрипты
-└── docs/               # Документация
-```
-
-## ⚙️ Требования к системе
-
-### Минимальные требования
-- **CPU**: 4+ cores (Intel i5 / AMD Ryzen 5)
-- **RAM**: 16 GB (32 GB рекомендуется)
-- **GPU**: NVIDIA 6GB+ VRAM (RTX 3060+) — опционально
-- **Storage**: 50 GB SSD
-- **OS**: Ubuntu 22.04 / Windows 11 / macOS 13+
-- **Python**: 3.11+
-- **Docker**: 24.0+ (опционально)
-
-### Производительность
-- **Inference (GPU)**: ~15-30ms на пользователя
-- **Inference (CPU)**: ~80-120ms на пользователя
-- **Batch (1000 users)**: ~2-5 сек (GPU)
-- **Online Learning**: ~500ms на обновление весов
-
-## 🛠️ Установка
-
-### 1. Клонирование репозитория
-```bash
-git clone https://github.com/AntoGA/Vk.git
-cd Vk
-```
-
-### 2. Создание виртуального окружения
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или
-venv\Scripts\activate  # Windows
-```
-
-### 3. Установка зависимостей
-```bash
-pip install -r requirements.txt
-pip install -r requirements-dev.txt  # для разработки
-```
-
-### 4. Настройка окружения
-```bash
-cp .env.example .env
-# Отредактируйте .env файл, добавив VK API токен
-```
-
-### 5. Запуск через Docker (опционально)
-```bash
-docker-compose up -d
-```
-
-## 🚀 Быстрый старт
-
-### Запуск API сервера
-```bash
-python -m api.main
-```
-
-API будет доступен на `http://localhost:8000`
-
-### Запуск Dashboard
-```bash
-streamlit run dashboard/app.py
-```
-
-Dashboard будет доступен на `http://localhost:8501`
-
-### Сбор данных из VK API
-```bash
-python scripts/collect_data.py --users 1000
-```
-
-### Обучение модели
-```bash
-python scripts/train_model.py --config configs/training.yaml
-```
-
-### Запуск тестов
-```bash
-pytest tests/ -v
-```
-
-## 📚 Документация
-
-- [Архитектура системы](docs/architecture.md)
-- [API Reference](docs/api_reference.md)
-- [Руководство по деплою](docs/deployment.md)
-
-## 🔧 VK API Методы
-
-Система использует следующие методы VK API:
-- `users.get` — профиль пользователя
-- `friends.get` — социальный граф
-- `groups.get` — сообщества
-- `likes.getList` — лайки
-- `wall.get` — посты
-- `newsfeed.get` — лента новостей
-- `video.get` — видео
-- `audio.get` — музыка
-
-## 📊 Иерархия интересов
-
-Система поддерживает 3 уровня иерархии:
-- **Level 0**: 12 основных категорий (Спорт, IT, Музыка и т.д.)
-- **Level 1**: 80+ подкатегорий
-- **Level 2**: 500+ микро-интересов
-
-Пример: `Спорт → Футбол → ФК Зенит`
-
-## 🤖 Модель
-
-Гибридная архитектура:
-1. **Transformer Encoder** — обработка последовательности действий
-2. **Graph Attention Network** — учёт социального графа
-3. **Multi-head Output** — предсказание интересов, уверенности, следующего действия
-
-## 📈 Метрики
-
-- **Interest Score** — вероятность интереса (0-100%)
-- **Confidence Level** — уверенность модели
-- **Interest Dynamics** — динамика интересов
-- **Segment Size** — размер сегмента
-- **Prediction Accuracy** — точность на валидации
-
-## 🔄 Online Learning
-
-Модель непрерывно обучается на новых данных:
-- Batch size: 32-64
-- Update frequency: каждые 100 событий
-- Experience buffer: 100K samples
-- Learning rate: 1e-4 (cosine annealing)
-
-## 🧪 Тестирование
+## Reproducible PoC path
 
 ```bash
-# Unit тесты
-pytest tests/test_models.py -v
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+python -m pip install numpy pytest
+# Run from the repository root so scripts can import ml.
+export PYTHONPATH="$PWD"        # PowerShell: $env:PYTHONPATH = (Get-Location).Path
 
-# Integration тесты
-pytest tests/test_api.py -v
-
-# Coverage
-pytest --cov=ml --cov=api tests/
+python scripts/run_e2e_pipeline.py --device cpu
+python scripts/benchmark.py --device cpu
 ```
 
-## 📝 Лицензия
+The E2E command generates deterministic synthetic tensors, trains a small model, evaluates it, saves/reloads a checkpoint and writes:
 
-MIT License
+```text
+artifacts/e2e/model.pt
+artifacts/e2e/results.json
+```
 
-## 👥 Авторы
+The benchmark reads that checkpoint and writes:
 
-- [AntoGA](https://github.com/AntoGA)
+```text
+artifacts/benchmark/results.json
+```
 
-## 🤝 Contributing
+Benchmark output contains the commit SHA when Git is available, runtime/software information, device information, warm-up count, measured-run count, latency percentiles and measured throughput.
 
-Pull requests приветствуются! Для крупных изменений сначала откройте issue.
+**There are deliberately no benchmark numbers in this README.** Results depend on the exact commit, checkpoint, hardware and runtime. Publish a number only together with the generated artifact that supports it.
 
-## 📧 Контакты
+## Architecture
 
-Для вопросов и предложений используйте GitHub Issues.
+```text
+ACTION SEQUENCE ──> projection ──> Transformer ──┐
+                                                 ├─> cross-attention ─> pooled representation ─> interests
+SOCIAL GRAPH ─────────────────────> GAT ─────────┘                                  ├─> confidence
+                                                                                     └─> embedding
+```
+
+The shared PoC contract is defined in `ml/contracts.py`:
+
+```python
+ModelInput(
+    action_sequence,      # [B, T, action_dim]
+    action_mask,          # [B, T]
+    graph_features,       # [B, N, node_dim]
+    adjacency_matrix,     # [B, N, N]
+)
+```
+
+`InterestPredictor` returns logits, sigmoid probabilities, confidence scores and user embeddings through `ModelOutput`.
+
+## Evaluation scope
+
+The current E2E metrics are useful for checking that the training/evaluation path works on a deterministic synthetic task. They are **not estimates of quality on VK users**.
+
+MAP@K and NDCG@K are not claimed by the reproducible path until their implementation and evaluation protocol are verified. No real-data F1, latency SLA, throughput SLA or accuracy claim is made here.
+
+## Limitations
+
+1. **Synthetic data only** — no validated real VK dataset is included in the reproducible path.
+2. **No production validation** — load balancing, autoscaling, failure recovery and sustained traffic have not been demonstrated by the benchmark.
+3. **Online learning is experimental** — it requires monitoring, drift controls and rollback before production use.
+4. **Legacy/integration surfaces may lag the unified PoC contract** — API/dashboard/deployment code should be validated independently before being presented as deployable.
+5. **No fixed hardware claims** — hardware shown by a benchmark comes from the machine that actually ran it.
+
+## Repository map
+
+```text
+ml/contracts.py                  shared model-facing contract
+ml/models/                       Transformer, GAT and hybrid predictor
+ml/training/                     training experiments
+ml/inference/                    inference experiments
+scripts/run_e2e_pipeline.py      reproducible synthetic PoC
+scripts/benchmark.py             measured checkpoint benchmark
+api/                             API integration work
+dashboard/                       dashboard experiments
+k8s/                             deployment manifests (not production-validated)
+tests/                           test suite
+```
+
+## Evidence standard
+
+For any performance or quality result attached to this project, record at minimum:
+
+- commit SHA;
+- dataset/source and split;
+- seed and model/checkpoint;
+- software/runtime versions;
+- hardware/device;
+- warm-up and measured-run counts for latency;
+- raw machine-readable result artifact.
+
+If those are absent, treat the number as an example or target, not as a measured result.
+
+## Roadmap
+
+- validate the unified contract across API/inference/training integration surfaces;
+- expand integration coverage beyond the synthetic PoC tests;
+- implement and test MAP@K / NDCG@K if ranking metrics are needed;
+- validate against an appropriately licensed/consented real dataset before making real-world quality claims;
+- add load testing and operational monitoring before using production terminology.
+
+## License
+
+The project metadata declares MIT; a LICENSE file is not currently included.
+
+## Inference integration validation
+
+`InterestPredictorService`, `BatchProcessor` and the CPU preparation/benchmark
+path of `ModelOptimizer` use `ModelInput` / `ModelOutput`.
+Submit `BatchRequest(request_id, features=single_item_model_input)` after
+`processor.start()`; `get_result(id)` returns a single-item `ModelOutput` or
+raises the worker error. `stop()` drains accepted requests; if draining exceeds
+five seconds it raises `TimeoutError` and the worker continues draining.
+Sequence lengths may differ; graph node counts and feature dimensions must match
+within a batch. Mixed graph sizes are rejected because graph-node padding masks
+are not implemented. A failed batch propagates the error to every request in it.
+Do not mutate submitted inputs while the worker is processing them.
+
+CPU inference preparation and timing are tested. CUDA FP16 and `torch.compile`
+remain unvalidated optional paths; compile/warmup failures propagate to the caller.
+`export_onnx` explicitly raises `NotImplementedError` until an exporter and
+runtime parity tests are implemented. No sub-100ms guarantee is made.
+
+Validation history:
+- [Core audit](docs/reports/2026-10-25-pr6-audit.md)
+- [Batch/optimizer integration](docs/reports/2026-10-25-inference-integration.md)

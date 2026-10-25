@@ -1,0 +1,55 @@
+{
+  "source_commit": "65bd79d79a9699251ec3cb784c0be1fbaaaa5dbd",
+  "date": "2026-10-25",
+  "environment": {
+    "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+    "python": "3.12.14",
+    "torch": "2.14.1+cpu",
+    "cuda_runtime": null,
+    "gpu": null
+  },
+  "threads": {
+    "OMP_NUM_THREADS": 1,
+    "MKL_NUM_THREADS": 1
+  },
+  "tests": {
+    "passed": 25,
+    "failed": 0,
+    "duration_seconds": 6.86
+  },
+  "compileall": "passed",
+  "local_tracked_file_hash_mismatches": [],
+  "e2e": {
+    "runs": 2,
+    "users": 32,
+    "epochs": 1,
+    "batch_size": 8,
+    "seed": 42,
+    "test_samples": 7,
+    "checkpoint_tensors_identical": true,
+    "quality_identical": true
+  },
+  "queue": {
+    "concurrent_submitters": 4,
+    "submitted": 64,
+    "returned": 64,
+    "all_finite": true,
+    "pending_after_stop": 0,
+    "worker_alive_after_stop": false
+  },
+  "benchmark": {
+    "warmup_runs": 3,
+    "measured_runs": 10,
+    "json_finite_validation": "passed",
+    "commit_sha": null,
+    "note": "Snapshot has no .git; not a commit-bound performance claim."
+  },
+  "ci": "https://github.com/AntoGA/Vk/actions/runs/40210307861",
+  "limitations": [
+    "CPU synthetic PoC only",
+    "No real VK dataset validation",
+    "No CUDA/FP16/compile/ONNX validation",
+    "No production SLA/load validation",
+    "API/dashboard integration remains separate"
+  ]
+}

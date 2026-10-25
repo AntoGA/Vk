@@ -58,7 +58,8 @@ class TransformerEncoder(nn.Module):
         
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=n_layers
+            num_layers=n_layers,
+            enable_nested_tensor=False
         )
         
         self.layer_norm = nn.LayerNorm(d_model)

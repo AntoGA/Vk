@@ -67,7 +67,7 @@ class GraphAttentionLayer(nn.Module):
         
         # Attention coefficients
         # [batch, n_heads, n_nodes, n_nodes]
-        e = torch.einsum('bhnnf,hfo->bhnn', Wh_concat, self.a).squeeze(-1)
+        e = torch.einsum('bhijf,hfo->bhijo', Wh_concat, self.a).squeeze(-1)
         e = self.leaky_relu(e)
         
         # Mask with adjacency matrix

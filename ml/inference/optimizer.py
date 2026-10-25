@@ -1,126 +1,78 @@
+"""PoC inference preparation and measured timing, without an implied SLA."""
+import time
+import numpy as np
 import torch
-import torch.nn as nn
-from typing import Optional
-import logging
-
-logger = logging.getLogger(__name__)
+from ml.contracts import ModelInput
 
 
 class ModelOptimizer:
-    """Optimizes model for fast inference (<100ms)"""
-    
-    def __init__(self, model: nn.Module, device: str = "cpu"):
+    def __init__(self, model, device="cpu"):
         self.model = model
-        self.device = device
+        self.device = torch.device(device)
         self.optimized = False
-        
-    def optimize_for_inference(self, use_fp16: bool = False, use_torch_compile: bool = False) -> nn.Module:
-        """Apply inference optimizations"""
-        logger.info("Optimizing model for inference...")
-        
-        self.model.eval()
-        self.model.to(self.device)
-        
-        # Disable gradients
-        for param in self.model.parameters():
-            param.requires_grad = False
-        
-        # FP16 conversion
-        if use_fp16 and self.device == "cuda":
-            logger.info("Converting to FP16...")
-            self.model = self.model.half()
-        
-        # Torch compile (PyTorch 2.0+)
+
+    def _example(self, example=None):
+        if example is None:
+            c = self.model.config
+            t, n = min(6, c.max_seq_len), 4
+            example = ModelInput(torch.zeros(1, t, c.action_dim),
+                torch.ones(1, t, dtype=torch.bool),
+                torch.zeros(1, n, c.node_dim), torch.eye(n).unsqueeze(0))
+        example.validate()
+        dtype = next(self.model.parameters()).dtype
+        return ModelInput(example.action_sequence.to(self.device, dtype=dtype),
+            example.action_mask.to(self.device),
+            example.graph_features.to(self.device, dtype=dtype),
+            example.adjacency_matrix.to(self.device, dtype=dtype))
+
+    def _sync(self):
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+
+    def optimize_for_inference(self, use_fp16=False, use_torch_compile=False, example_input=None):
+        self.optimized = False
+        if use_fp16 and self.device.type != "cuda":
+            raise ValueError("FP16 preparation is supported only on CUDA")
+        self.model.to(self.device).eval()
+        if use_fp16:
+            self.model.half()
+        example = self._example(example_input)
         if use_torch_compile:
-            logger.info("Compiling model with torch.compile...")
-            try:
-                self.model = torch.compile(self.model, mode="max-autotune")
-            except Exception as e:
-                logger.warning(f"torch.compile failed: {e}")
-        
-        # Warmup
-        self._warmup()
-        
+            self.model = torch.compile(self.model, mode="max-autotune")
+        # Compile is lazy: warmup must succeed before optimized becomes True.
+        self._warmup(example_input=example)
         self.optimized = True
-        logger.info("Model optimization complete")
         return self.model
-    
-    def _warmup(self, n_runs: int = 10):
-        """Warmup model for stable performance"""
-        logger.info(f"Warming up model with {n_runs} runs...")
-        
-        dummy_input = {
-            "profile_features": torch.randn(1, 50).to(self.device),
-            "action_sequence": torch.randn(1, 20, 128).to(self.device),
-            "graph_features": torch.randn(1, 10, 64).to(self.device),
-        }
-        
-        with torch.no_grad():
+
+    def _warmup(self, n_runs=10, example_input=None):
+        if n_runs < 0:
+            raise ValueError("n_runs must be nonnegative")
+        self.model.to(self.device).eval()
+        example = self._example(example_input)
+        with torch.inference_mode():
             for _ in range(n_runs):
-                _ = self.model(**dummy_input)
-        
-        if self.device == "cuda":
-            torch.cuda.synchronize()
-    
-    def export_onnx(self, output_path: str, opset_version: int = 14):
-        """Export model to ONNX format"""
-        logger.info(f"Exporting model to ONNX: {output_path}")
-        
-        dummy_input = {
-            "profile_features": torch.randn(1, 50).to(self.device),
-            "action_sequence": torch.randn(1, 20, 128).to(self.device),
-            "graph_features": torch.randn(1, 10, 64).to(self.device),
-        }
-        
-        torch.onnx.export(
-            self.model,
-            (dummy_input,),
-            output_path,
-            opset_version=opset_version,
-            input_names=["profile_features", "action_sequence", "graph_features"],
-            output_names=["interests", "confidence"],
-            dynamic_axes={
-                "profile_features": {0: "batch_size"},
-                "action_sequence": {0: "batch_size", 1: "seq_len"},
-                "graph_features": {0: "batch_size", 1: "num_neighbors"},
-                "interests": {0: "batch_size"},
-                "confidence": {0: "batch_size"},
-            },
-        )
-        
-        logger.info("ONNX export complete")
-    
-    def benchmark(self, n_runs: int = 100) -> dict:
-        """Benchmark model inference speed"""
-        import time
-        
-        dummy_input = {
-            "profile_features": torch.randn(1, 50).to(self.device),
-            "action_sequence": torch.randn(1, 20, 128).to(self.device),
-            "graph_features": torch.randn(1, 10, 64).to(self.device),
-        }
-        
+                self.model(example)
+        self._sync()
+
+    def benchmark(self, n_runs=100, example_input=None, warmup=10):
+        if n_runs < 1 or warmup < 0:
+            raise ValueError("n_runs must be positive and warmup nonnegative")
+        self.model.to(self.device).eval()
+        example = self._example(example_input)
+        self._warmup(warmup, example)
         times = []
-        with torch.no_grad():
+        with torch.inference_mode():
             for _ in range(n_runs):
-                start = time.perf_counter()
-                _ = self.model(**dummy_input)
-                if self.device == "cuda":
-                    torch.cuda.synchronize()
-                end = time.perf_counter()
-                times.append((end - start) * 1000)  # ms
-        
-        import numpy as np
-        times = np.array(times)
-        
-        stats = {
-            "mean_ms": float(times.mean()),
-            "median_ms": float(np.median(times)),
-            "p95_ms": float(np.percentile(times, 95)),
-            "p99_ms": float(np.percentile(times, 99)),
-            "min_ms": float(times.min()),
-            "max_ms": float(times.max()),
-        }
-        
-        logger.info(f"Benchmark results: {stats}")
-        return stats
+                self._sync()
+                started = time.perf_counter()
+                self.model(example)
+                self._sync()
+                times.append((time.perf_counter() - started) * 1000)
+        times = np.asarray(times)
+        return {"mean_ms": float(times.mean()), "median_ms": float(np.median(times)),
+            "p95_ms": float(np.percentile(times, 95)), "p99_ms": float(np.percentile(times, 99)),
+            "min_ms": float(times.min()), "max_ms": float(times.max()),
+            "measured_runs": n_runs, "warmup_runs": warmup, "device": str(self.device)}
+
+    def export_onnx(self, output_path, opset_version=14):
+        raise NotImplementedError("ONNX export is not validated for ModelInput/ModelOutput; use checkpoint inference")
