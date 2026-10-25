@@ -76,13 +76,16 @@ class Trainer:
 
     def save_checkpoint(self, filename: str) -> Path:
         path = self.checkpoint_dir / filename
-        torch.save({
+        payload = (self.model.checkpoint_payload() if hasattr(self.model, "checkpoint_payload")
+                   else {"model_state_dict": self.model.state_dict()})
+        payload.update({
             "epoch": self.epoch,
             "global_step": self.global_step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "history": self.history,
-        }, path)
+        })
+        torch.save(payload, path)
         return path
 
     def load_checkpoint(self, checkpoint_path: str) -> None:

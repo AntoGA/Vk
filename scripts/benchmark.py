@@ -26,6 +26,8 @@ def dummy(config, batch, device, seed):
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument("--model",default="artifacts/e2e/model.pt"); p.add_argument("--device",choices=["cpu","cuda"],default="cuda" if torch.cuda.is_available() else "cpu"); p.add_argument("--num-runs",type=int,default=100); p.add_argument("--warmup",type=int,default=10); p.add_argument("--batch-size",type=int,default=1); p.add_argument("--seed",type=int,default=42); p.add_argument("--output",default="artifacts/benchmark/results.json"); a=p.parse_args()
+    if a.num_runs < 1 or a.warmup < 0 or a.batch_size < 1:
+        p.error("num-runs and batch-size must be positive; warmup must be nonnegative")
     if a.device=="cuda" and not torch.cuda.is_available(): raise SystemExit("CUDA requested but unavailable")
     device=torch.device(a.device); model=InterestPredictor.load_from_checkpoint(a.model,map_location=device).to(device).eval(); x=dummy(model.config,a.batch_size,device,a.seed)
     for _ in range(a.warmup):

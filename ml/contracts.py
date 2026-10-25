@@ -29,10 +29,14 @@ class ModelInput:
         return int(self.action_sequence.shape[0])
 
     def validate(self) -> None:
+        if self.action_sequence.ndim != 3 or any(d == 0 for d in self.action_sequence.shape):
+            raise ValueError("action_sequence must have nonempty shape [B, T, action_dim]")
         b, t, _ = self.action_sequence.shape
         if self.action_mask.shape != (b, t):
             raise ValueError("action_mask must have shape [B, T]")
-        if self.graph_features.ndim != 3 or self.graph_features.shape[0] != b:
+        if self.action_mask.dtype != torch.bool or not self.action_mask.any(dim=1).all():
+            raise ValueError("action_mask must be boolean with at least one valid action per item")
+        if self.graph_features.ndim != 3 or self.graph_features.shape[0] != b or any(d == 0 for d in self.graph_features.shape):
             raise ValueError("graph_features must have shape [B, N, node_dim]")
         n = self.graph_features.shape[1]
         if self.adjacency_matrix.shape != (b, n, n):

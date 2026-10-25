@@ -1,6 +1,7 @@
 """Inference service built on the shared ModelInput / ModelOutput contract."""
 from dataclasses import dataclass
 import time
+import hashlib
 from typing import Dict, List
 
 import torch
@@ -27,9 +28,11 @@ class InterestPredictorService:
         self.model.eval()
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
-        self.cache: dict[int, tuple[ModelOutput, float]] = {}
+        self.cache: dict[tuple[int, str], tuple[ModelOutput, float]] = {}
 
     def predict_input(self, model_input: ModelInput, user_id: int = 0, top_k: int = 10) -> PredictionResult:
+        if model_input.batch_size != 1:
+            raise ValueError("single-result inference expects batch size 1")
         model_input = model_input.to(self.device)
         model_input.validate()
         started = time.perf_counter()
@@ -44,8 +47,10 @@ class InterestPredictorService:
         """Predict from the canonical input contract."""
         if model_input.batch_size != 1:
             raise ValueError("predict expects a single-item batch; use predict_batch for larger batches")
-        if self.cache_enabled and user_id in self.cache:
-            cached, cached_at = self.cache[user_id]
+        model_input.validate()
+        cache_key = (user_id, self._input_fingerprint(model_input)) if self.cache_enabled else None
+        if cache_key in self.cache:
+            cached, cached_at = self.cache[cache_key]
             if time.time() - cached_at < self.cache_ttl:
                 return self._output_to_result(cached, user_id, 0.0, top_k)
         model_input = model_input.to(self.device)
@@ -57,7 +62,7 @@ class InterestPredictorService:
             torch.cuda.synchronize(self.device)
         latency_ms = (time.perf_counter() - started) * 1000.0
         if self.cache_enabled:
-            self.cache[user_id] = (output, time.time())
+            self.cache[cache_key] = (output, time.time())
         return self._output_to_result(output, user_id, latency_ms, top_k)
 
     def predict_batch(self, model_input: ModelInput) -> ModelOutput:
@@ -86,6 +91,17 @@ class InterestPredictorService:
         state = checkpoint.get("model_state_dict", checkpoint)
         self.model.load_state_dict(state)
         self.model.eval()
+        self.clear_cache()
+
+    @staticmethod
+    def _input_fingerprint(inputs: ModelInput) -> str:
+        digest = hashlib.sha256()
+        for tensor in (inputs.action_sequence, inputs.action_mask,
+                       inputs.graph_features, inputs.adjacency_matrix):
+            tensor = tensor.detach().cpu().contiguous()
+            digest.update(str((tensor.dtype, tuple(tensor.shape))).encode())
+            digest.update(tensor.view(torch.uint8).numpy().tobytes())
+        return digest.hexdigest()
 
     def clear_cache(self) -> None:
         self.cache.clear()

@@ -10,7 +10,7 @@ Online Learner - использует единый контракт (ModelInput,
 import torch
 import torch.nn as nn
 from torch.optim import SGD, Adam
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from collections import deque
 import logging
 from datetime import datetime
@@ -62,7 +62,7 @@ class OnlineLearner:
         experience_buffer_size: int = 100000,
         device: str = "cpu"
     ):
-        self.model = model
+        self.model = model.to(device)
         self.device = device
         self.batch_size = batch_size
         self.update_frequency = update_frequency
@@ -102,15 +102,16 @@ class OnlineLearner:
         
         # Process each input in batch
         losses = []
-        for model_input in batch_inputs:
-            model_output = self.model(model_input)
-            # Assuming model_output has predictions attribute
-            if hasattr(model_output, 'predictions'):
-                loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                    model_output.predictions, batch_labels
-                )
-                losses.append(loss)
-        
+        for model_input, labels in zip(batch_inputs, batch_labels):
+            model_output = self.model(model_input.to(self.device))
+            labels = labels.to(self.device)
+            if labels.ndim == 1:
+                labels = labels.unsqueeze(0)
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                model_output.interest_logits, labels
+            )
+            losses.append(loss)
+
         if losses:
             avg_loss = torch.stack(losses).mean()
             avg_loss.backward()

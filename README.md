@@ -22,7 +22,10 @@ The last group should be treated as **experimental/integration work**, not evide
 ```bash
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+python -m pip install numpy pytest
+# Run from the repository root so scripts can import ml.
+export PYTHONPATH="$PWD"        # PowerShell: $env:PYTHONPATH = (Get-Location).Path
 
 python scripts/run_e2e_pipeline.py --device cpu
 python scripts/benchmark.py --device cpu
@@ -113,11 +116,11 @@ If those are absent, treat the number as an example or target, not as a measured
 ## Roadmap
 
 - validate the unified contract across API/inference/training integration surfaces;
-- add contract and checkpoint round-trip tests to CI;
+- expand integration coverage beyond the synthetic PoC tests;
 - implement and test MAP@K / NDCG@K if ranking metrics are needed;
 - validate against an appropriately licensed/consented real dataset before making real-world quality claims;
 - add load testing and operational monitoring before using production terminology.
 
 ## License
 
-MIT. See `LICENSE`.
+The project metadata declares MIT; a LICENSE file is not currently included.

@@ -38,6 +38,8 @@ def score(probs, labels):
 
 def main():
     p = argparse.ArgumentParser(); p.add_argument("--num-users", type=int, default=256); p.add_argument("--epochs", type=int, default=3); p.add_argument("--batch-size", type=int, default=32); p.add_argument("--seed", type=int, default=42); p.add_argument("--device", choices=["cpu","cuda"], default="cuda" if torch.cuda.is_available() else "cpu"); p.add_argument("--output-dir", default="artifacts/e2e"); a = p.parse_args()
+    if a.num_users < 2 or a.epochs < 1 or a.batch_size < 1:
+        p.error("num-users must be >= 2; epochs and batch-size must be positive")
     if a.device == "cuda" and not torch.cuda.is_available(): raise SystemExit("CUDA requested but unavailable")
     seed_all(a.seed); device = torch.device(a.device); config = ModelConfig(); x, y = make_data(a.num_users, config, a.seed)
     split = int(a.num_users*.8); train = torch.arange(split); test = torch.arange(split, a.num_users)
